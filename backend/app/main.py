@@ -1,9 +1,27 @@
 from fastapi import FastAPI
-from .models import Sensor, Sector
+from pydantic import BaseModel
+from typing import List, Optional
 
 # Instancia de la aplicación
 app = FastAPI(title="AgroTech San Juan API")
 
+# --- Modelos de Datos (Pydantic) ---
+
+class Sensor(BaseModel):
+    id: int
+    marca: str
+    modelo: str
+    estado: str
+    tipo: str
+    sector_id: int
+    
+class Sector(BaseModel):
+    id: int
+    nombre: str
+    descripcion: str
+    humedad_minima: float
+    sensores: List[Sensor] = []
+    
 # --- Endpoints ---
 @app.get("/")
 def inicio():
