@@ -65,29 +65,43 @@ def listar_sectores(db: Session = Depends(get_db), current_user: UserDB = Depend
     sectores = db.query(SectorDB).all()
     
     for sector in sectores:
-        razones = [] # Lista para guardar qué está fallando
+        # Usamos un diccionario para agrupar promedios por tipo de alerta
+        # Estructura: {"Baja Humedad": [23.5, 44.5], "Alta Temperatura": [41.2]}
+        alertas_agrupadas: Dict[str, List[float]] = {}
         
         for sensor in sector.sensores:
-            ultima = db.query(LecturaDB).filter(
+            ultimas_lecturas = db.query(LecturaDB).filter(
                 LecturaDB.sensor_id == sensor.id
-            ).order_by(LecturaDB.fecha.desc()).first()
+            ).order_by(LecturaDB.fecha.desc()).limit(5).all()
             
-            if not ultima:
+            if not ultimas_lecturas:
                 continue
-                
-            # Chequeo de Humedad
-            if sensor.tipo.lower() == "humedad" and ultima.valor < sector.humedad_minima:
-                razones.append("Baja Humedad")
             
-            # Chequeo de Temperatura
-            if sensor.tipo.lower() == "temperatura" and ultima.valor > sector.temp_maxima:
-                razones.append("Alta Temperatura")
+            valores = [l.valor for l in ultimas_lecturas]
+            promedio_sensor = sum(valores) / len(valores)
+            
+            # Agrupamos en el diccionario en lugar de crear el string todavía
+            if sensor.tipo.lower() == "humedad" and promedio_sensor < sector.humedad_minima:
+                tipo = "Baja Humedad"
+                if tipo not in alertas_agrupadas:
+                    alertas_agrupadas[tipo] = []
+                alertas_agrupadas[tipo].append(promedio_sensor)
+            
+            if sensor.tipo.lower() == "temperatura" and promedio_sensor > sector.temp_maxima:
+                tipo = "Alta Temperatura"
+                if tipo not in alertas_agrupadas:
+                    alertas_agrupadas[tipo] = []
+                alertas_agrupadas[tipo].append(promedio_sensor)
 
-        # Determinamos el estado final
-        if razones:
-            # Usamos set() para no repetir "Baja Humedad" si hay 2 sensores fallando
-            motivos_unicos = ", ".join(set(razones))
-            sector.estado = f"CRÍTICO - {motivos_unicos}"
+        # Si hay alertas, armamos el string final promediando los promedios
+        if alertas_agrupadas:
+            resumen_alertas = []
+            for tipo, valores in alertas_agrupadas.items():
+                promedio_final = sum(valores) / len(valores)
+                unidad = "%" if "Humedad" in tipo else "°C"
+                resumen_alertas.append(f"{tipo} ({promedio_final:.1f}{unidad})")
+            
+            sector.estado = f"CRÍTICO - {', '.join(resumen_alertas)}"
         else:
             sector.estado = "OK"
                 

@@ -83,6 +83,17 @@ class SectorResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
     
+class SectorDetalle(BaseModel):
+    id: int
+    nombre: str
+    cultivo: str
+    estado_critico: bool
+    alertas: List[str]
+    cantidad_sensores: int
+
+    class Config:
+        from_attributes = True
+    
 # ==========================================
 # MODELOS PARA USUARIOS
 # ==========================================
