@@ -1,5 +1,24 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
+from datetime import datetime
+
+
+
+class LecturaBase(BaseModel):
+    valor: float
+    sensor_id: int
+
+class LecturaCreate(LecturaBase):
+    pass # No necesitamos nada más para crearla
+
+class LecturaResponse(BaseModel):
+    id: int
+    valor: float
+    fecha: datetime
+    sensor_id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 # ==========================================
 # MODELOS PARA SENSORES
@@ -10,6 +29,8 @@ class SensorBase(BaseModel):
     marca: str
     modelo: str
     sector_id: int
+    nombre: str   
+    tipo: str
 
 class SensorCreate(SensorBase):
     """Se usa en el POST: El ID es obligatorio al crear manualmente"""
@@ -21,11 +42,13 @@ class SensorUpdate(BaseModel):
     modelo: Optional[str] = None
     sector_id: Optional[int] = None
 
-class SensorResponse(SensorBase):
-    """Lo que la API devuelve (incluye el ID generado)"""
+class SensorResponse(BaseModel):
     id: int
-    
-    # Configuración para que Pydantic entienda a SQLAlchemy
+    nombre: str
+    tipo: str
+    sector_id: int
+    lecturas: List[LecturaResponse] = []
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -39,7 +62,7 @@ class SectorBase(BaseModel):
     descripcion: Optional[str] = None
     # Validación técnica: la humedad no puede ser negativa ni mayor a 100
     humedad_minima: int = Field(ge=0, le=100, description="Humedad entre 0 y 100%")
-
+    temp_maxima: float = 40.0
 class SectorCreate(SectorBase):
     """Se usa en el POST"""
     id: int
@@ -50,10 +73,45 @@ class SectorUpdate(BaseModel):
     descripcion: Optional[str] = None
     humedad_minima: Optional[int] = Field(None, ge=0, le=100)
 
-class SectorResponse(SectorBase):
-    """Respuesta completa que incluye la lista de sus sensores"""
+class SectorResponse(BaseModel):
     id: int
-    # Relación anidada: Un sector devuelve sus sensores vinculados
+    nombre: str
+    descripcion: Optional[str]
+    humedad_minima: float
+    estado: str = "OK" 
     sensores: List[SensorResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
+    
+# ==========================================
+# MODELOS PARA USUARIOS
+# ==========================================
+    
+# 1. La Base: Lo que comparten todas las versiones del usuario
+class UserBase(BaseModel):
+    username: str
+
+# Se usa solo cuando alguien se registra (POST /usuarios/)
+class UserCreate(UserBase):
+    password: str
+
+# 3. Para Respuesta: Hereda el username y AGREGA id y estado
+# NO tiene password. Es lo que la API devuelve al mundo.
+class UserResponse(UserBase):
+    id: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+# ==========================================
+# MODELOS PARA TOKENS
+# ==========================================   
+    
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+    
+    

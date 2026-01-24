@@ -1,21 +1,54 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+from .auth import crear_access_token, obtener_password_hash, verificar_password, SECRET_KEY, ALGORITHM
 import random
-
-# Importamos todo lo necesario
 from .database import engine, Base, get_db
-from .models_db import SectorDB, SensorDB
+from .models_db import SectorDB, SensorDB, UserDB, LecturaDB
 from .models import (
     SectorCreate, SectorUpdate, SectorResponse,
-    SensorCreate, SensorUpdate, SensorResponse
+    SensorCreate, SensorUpdate, SensorResponse,
+    UserCreate, UserResponse,
+    Token, TokenData,
+    LecturaCreate, LecturaResponse
 )
 from .logic import calcular_promedio, evaluar_estado_sector
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from jose import JWTError, jwt
 
 # Creamos las tablas
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="AgroTech San Juan - API Profesional")
+app = FastAPI(title="AgroTech San Juan")
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="No se pudo validar la credencial",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        # 1. Decodificamos el token usando tu SECRET_KEY
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        
+        if username is None:
+            raise credentials_exception
+            
+        token_data = TokenData(username=username)
+    except JWTError:
+        # Si el token expiró o la firma no coincide, saltamos acá
+        raise credentials_exception
+
+    # 2. Buscamos al usuario en Postgres para estar 100% seguros
+    usuario = db.query(UserDB).filter(UserDB.username == token_data.username).first()
+    
+    if usuario is None:
+        raise credentials_exception
+        
+    return usuario
 
 # --- RUTAS DE SECTORES ---
 
@@ -28,8 +61,37 @@ def crear_sector(sector: SectorCreate, db: Session = Depends(get_db)):
     return nuevo_sector
 
 @app.get("/sectores/", response_model=List[SectorResponse])
-def listar_sectores(db: Session = Depends(get_db)):
-    return db.query(SectorDB).all()
+def listar_sectores(db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
+    sectores = db.query(SectorDB).all()
+    
+    for sector in sectores:
+        razones = [] # Lista para guardar qué está fallando
+        
+        for sensor in sector.sensores:
+            ultima = db.query(LecturaDB).filter(
+                LecturaDB.sensor_id == sensor.id
+            ).order_by(LecturaDB.fecha.desc()).first()
+            
+            if not ultima:
+                continue
+                
+            # Chequeo de Humedad
+            if sensor.tipo.lower() == "humedad" and ultima.valor < sector.humedad_minima:
+                razones.append("Baja Humedad")
+            
+            # Chequeo de Temperatura
+            if sensor.tipo.lower() == "temperatura" and ultima.valor > sector.temp_maxima:
+                razones.append("Alta Temperatura")
+
+        # Determinamos el estado final
+        if razones:
+            # Usamos set() para no repetir "Baja Humedad" si hay 2 sensores fallando
+            motivos_unicos = ", ".join(set(razones))
+            sector.estado = f"CRÍTICO - {motivos_unicos}"
+        else:
+            sector.estado = "OK"
+                
+    return sectores
 
 @app.patch("/sectores/{sector_id}", response_model=SectorResponse)
 def actualizar_parcial_sector(sector_id: int, datos: SectorUpdate, db: Session = Depends(get_db)):
@@ -56,6 +118,35 @@ def eliminar_sector(sector_id: int, db: Session = Depends(get_db)):
     return None
 
 # --- RUTAS DE MONITOREO ---
+
+@app.get("/monitoreo/alertas")
+def obtener_alertas_riego(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    sectores = db.query(SectorDB).all()
+    alertas = []
+
+    for sector in sectores:
+        for sensor in sector.sensores:
+            # Solo nos interesan los sensores de Humedad
+            if sensor.tipo.lower() == "humedad":
+                # Obtenemos la última lectura (la más reciente por fecha)
+                ultima_lectura = db.query(LecturaDB).filter(
+                    LecturaDB.sensor_id == sensor.id
+                ).order_by(LecturaDB.fecha.desc()).first()
+
+                # Verificamos si existe la lectura y si es menor al umbral
+                if ultima_lectura and ultima_lectura.valor < sector.humedad_minima:
+                    alertas.append({
+                        "ubicacion": f"{sector.nombre} - {sector.descripcion}", # Combinamos ambos
+                        "sensor": sensor.nombre,
+                        "valor_actual": ultima_lectura.valor,
+                        "minimo_requerido": sector.humedad_minima,
+                        "mensaje": f"¡Alerta! En {sector.nombre} ({sector.descripcion}), el sensor {sensor.nombre} marca {ultima_lectura.valor}%. El mínimo es {sector.humedad_minima}%."
+                    })
+    
+    return {"total_alertas": len(alertas), "detalles": alertas}
 
 @app.get("/monitoreo/{sector_id}")
 def monitorear_sector(sector_id: int, db: Session = Depends(get_db)):
@@ -100,14 +191,14 @@ def reemplazar_sector_completo(sector_id: int, datos: SectorCreate, db: Session 
 
 # --- RUTAS DE SENSORES ---
 
-@app.post("/sensores/", response_model=SensorResponse, status_code=status.HTTP_201_CREATED)
-def crear_sensor(sensor: SensorCreate, db: Session = Depends(get_db)):
-    # Validación extra: ¿Existe el sector al que lo queremos asignar?
-    sector_existe = db.query(SectorDB).filter(SectorDB.id == sensor.sector_id).first()
-    if not sector_existe:
-        raise HTTPException(status_code=404, detail="No podés crear un sensor para un sector que no existe.")
-    
-    nuevo_sensor = SensorDB(**sensor.model_dump())
+@app.post("/sensores/", response_model=SensorResponse)
+def crear_sensor(
+    sensor: SensorCreate, # <--- FastAPI usa esta clase para armar el Swagger
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    # El **sensor.model_dump() expande nombre, tipo y sector_id
+    nuevo_sensor = SensorDB(**sensor.model_dump()) 
     db.add(nuevo_sensor)
     db.commit()
     db.refresh(nuevo_sensor)
@@ -145,11 +236,99 @@ def actualizar_parcial_sensor(sensor_id: int, datos: SensorUpdate, db: Session =
     db.refresh(sensor_db)
     return sensor_db
 
-@app.delete("/sensores/{sensor_id}", status_code=status.HTTP_204_NO_CONTENT)
-def eliminar_sensor(sensor_id: int, db: Session = Depends(get_db)):
+@app.delete("/sensores/{sensor_id}")
+def eliminar_sensor(
+    sensor_id: int, 
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
     sensor = db.query(SensorDB).filter(SensorDB.id == sensor_id).first()
     if not sensor:
         raise HTTPException(status_code=404, detail="Sensor no encontrado")
+        
     db.delete(sensor)
     db.commit()
-    return None
+    return {"detail": f"Sensor {sensor_id} eliminado por {current_user.username}"}
+
+# --- RUTAS DE USUARIOS ---
+
+
+@app.post("/usuarios/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def registrar_usuario(usuario: UserCreate, db: Session = Depends(get_db)):
+    # 1. ¿El usuario ya existe? (Validación de integridad)
+    usuario_existente = db.query(UserDB).filter(UserDB.username == usuario.username).first()
+    if usuario_existente:
+        raise HTTPException(
+            status_code=400, 
+            detail="Este nombre de usuario ya está registrado en AgroTech"
+        )
+
+    # 2. Convertimos la clave en un Hash (Seguridad)
+    clave_hasheada = obtener_password_hash(usuario.password)
+
+    # 3. Creamos la instancia para la DB
+    nuevo_usuario = UserDB(
+        username=usuario.username,
+        hashed_password=clave_hasheada
+    )
+
+    # 4. Impactamos en la base de datos
+    db.add(nuevo_usuario)
+    db.commit()
+    db.refresh(nuevo_usuario)
+
+    # FastAPI usa UserResponse para no devolver la contraseña en el JSON
+    return nuevo_usuario
+
+# --- RUTAS DE TOKENS ---
+@app.post("/token/", response_model=Token)
+def login_para_obtener_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(), 
+    db: Session = Depends(get_db)
+    ):
+    # 1. Buscar al usuario en la base de datos
+    usuario = db.query(UserDB).filter(UserDB.username == form_data.username).first()
+    
+    # 2. Verificar existencia y contraseña
+    # Usamos la función de auth.py para comparar el texto plano con el hash
+    if not usuario or not verificar_password(form_data.password, usuario.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario o contraseña incorrectos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 3. Si todo está bien, crear el token
+    # Guardamos el username dentro del "sub" (subject) del token
+    access_token = crear_access_token(data={"sub": usuario.username})
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# --- RUTAS DE LECTURAS ---
+
+@app.post("/lecturas/", response_model=LecturaResponse)
+def crear_lectura(
+    lectura: LecturaCreate, 
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user) # Solo usuarios logueados
+):
+    # Verificamos que el sensor exista antes de pegarle la lectura
+    sensor = db.query(SensorDB).filter(SensorDB.id == lectura.sensor_id).first()
+    if not sensor:
+        raise HTTPException(status_code=404, detail="El sensor no existe")
+
+    nueva_lectura = LecturaDB(**lectura.model_dump())
+    db.add(nueva_lectura)
+    db.commit()
+    db.refresh(nueva_lectura)
+    return nueva_lectura
+
+# 2. Obtener el historial de un sensor
+@app.get("/sensores/{sensor_id}/lecturas", response_model=List[LecturaResponse])
+def obtener_historial_sensor(
+    sensor_id: int, 
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    lecturas = db.query(LecturaDB).filter(LecturaDB.sensor_id == sensor_id).all()
+    return lecturas
