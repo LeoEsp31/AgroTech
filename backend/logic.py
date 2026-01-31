@@ -1,19 +1,32 @@
-from typing import List
+from typing import List, Dict, Optional
 
-
-def evaluar_estado_sector(humedad_actual: int, humedad_minima: int) -> dict:
+def evaluar_sensor(tipo: str, valor: float, humedad_min: float, temp_max: float) -> Optional[str]:
     """
-    Compara la humedad actual con el umbral mínimo y devuelve 
-    un estado y una recomendación.
+    Devuelve el tipo de alerta si el valor viola los umbrales.
+    Si está todo OK, devuelve None.
     """
-    necesita_riego = humedad_actual < humedad_minima
-    return {
-        "alerta": necesita_riego,
-        "estado": "CRÍTICO" if necesita_riego else "ÓPTIMO",
-        "accion": "Activar riego" if necesita_riego else "Mantener apagado"
-    }
+    tipo_normalizado = tipo.lower()
     
-def calcular_promedio(lecturas: List[int]) -> float:
-    if not lecturas:
-        return 0.0
-    return sum(lecturas) / len(lecturas)    
+    if tipo_normalizado == "humedad" and valor < humedad_min:
+        return "Baja Humedad"
+    
+    if tipo_normalizado == "temperatura" and valor > temp_max:
+        return "Alta Temperatura"
+        
+    return None
+
+def generar_resumen_estado(alertas: Dict[str, List[float]]) -> str:
+    """
+    Toma un diccionario de alertas y construye el string final para el usuario.
+    Ej: {"Baja Humedad": [15.0]} -> "CRÍTICO - Baja Humedad (15.0%)"
+    """
+    if not alertas:
+        return "OK"
+        
+    resumen_alertas = []
+    for tipo, valores in alertas.items():
+        promedio_final = sum(valores) / len(valores)
+        unidad = "%" if "Humedad" in tipo else "°C"
+        resumen_alertas.append(f"{tipo} ({promedio_final:.1f}{unidad})")
+    
+    return f"CRÍTICO - {', '.join(resumen_alertas)}"

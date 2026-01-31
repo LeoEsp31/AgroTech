@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Dict, List
 from .auth import crear_access_token, obtener_password_hash, verificar_password, SECRET_KEY, ALGORITHM
 import random
@@ -7,14 +7,17 @@ from .database import engine, Base, get_db
 from .models_db import SectorDB, SensorDB, UserDB, LecturaDB
 from .models import (
     SectorCreate, SectorUpdate, SectorResponse,
+    SectorListResponse,
     SensorCreate, SensorUpdate, SensorResponse,
     UserCreate, UserResponse,
     Token, TokenData,
     LecturaCreate, LecturaResponse
 )
-from .logic import calcular_promedio, evaluar_estado_sector
+from .logic import evaluar_sensor, generar_resumen_estado
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import JWTError, jwt
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 
 # Creamos las tablas
 Base.metadata.create_all(bind=engine)
@@ -53,62 +56,66 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 # --- RUTAS DE SECTORES ---
 
 @app.post("/sectores/", response_model=SectorResponse, status_code=status.HTTP_201_CREATED)
-def crear_sector(sector: SectorCreate, db: Session = Depends(get_db)):
+def crear_sector(sector: SectorCreate, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
     nuevo_sector = SectorDB(**sector.model_dump())
     db.add(nuevo_sector)
     db.commit()
     db.refresh(nuevo_sector)
     return nuevo_sector
 
-@app.get("/sectores/", response_model=List[SectorResponse])
+@app.get("/sectores/", response_model=List[SectorListResponse])
 def listar_sectores(db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    sectores = db.query(SectorDB).all()
+    # 1. Traemos Sectores + Sensores
+    sectores = db.query(SectorDB).options(joinedload(SectorDB.sensores)).all()
     
+    # 2. Recolectamos IDs
+    ids_sensores = [s.id for sector in sectores for s in sector.sensores]
+    
+    if not ids_sensores:
+        return sectores
+
+    # 3. Traemos lecturas bulk (últimas 24hs)
+    limite_tiempo = datetime.now(timezone.utc) - timedelta(hours=24)
+    lecturas_bulk = db.query(LecturaDB).filter(
+        LecturaDB.sensor_id.in_(ids_sensores),
+        LecturaDB.fecha >= limite_tiempo
+    ).all()
+    
+    # 4. Organizamos en memoria
+    lecturas_por_sensor = defaultdict(list)
+    for lectura in lecturas_bulk:
+        lecturas_por_sensor[lectura.sensor_id].append(lectura.valor)
+    
+    # 5. Procesamos usando la lógica extraída (Refactoring)
     for sector in sectores:
-        # Usamos un diccionario para agrupar promedios por tipo de alerta
-        # Estructura: {"Baja Humedad": [23.5, 44.5], "Alta Temperatura": [41.2]}
         alertas_agrupadas: Dict[str, List[float]] = {}
         
         for sensor in sector.sensores:
-            ultimas_lecturas = db.query(LecturaDB).filter(
-                LecturaDB.sensor_id == sensor.id
-            ).order_by(LecturaDB.fecha.desc()).limit(5).all()
-            
-            if not ultimas_lecturas:
+            valores = lecturas_por_sensor[sensor.id]
+            if not valores:
                 continue
             
-            valores = [l.valor for l in ultimas_lecturas]
-            promedio_sensor = sum(valores) / len(valores)
+            promedio = sum(valores) / len(valores)
             
-            # Agrupamos en el diccionario en lugar de crear el string todavía
-            if sensor.tipo.lower() == "humedad" and promedio_sensor < sector.humedad_minima:
-                tipo = "Baja Humedad"
-                if tipo not in alertas_agrupadas:
-                    alertas_agrupadas[tipo] = []
-                alertas_agrupadas[tipo].append(promedio_sensor)
+            tipo_alerta = evaluar_sensor(
+                sensor.tipo, 
+                promedio, 
+                sector.humedad_minima, 
+                sector.temp_maxima
+            )
             
-            if sensor.tipo.lower() == "temperatura" and promedio_sensor > sector.temp_maxima:
-                tipo = "Alta Temperatura"
-                if tipo not in alertas_agrupadas:
-                    alertas_agrupadas[tipo] = []
-                alertas_agrupadas[tipo].append(promedio_sensor)
+            if tipo_alerta:
+                if tipo_alerta not in alertas_agrupadas:
+                    alertas_agrupadas[tipo_alerta] = []
+                alertas_agrupadas[tipo_alerta].append(promedio)
 
-        # Si hay alertas, armamos el string final promediando los promedios
-        if alertas_agrupadas:
-            resumen_alertas = []
-            for tipo, valores in alertas_agrupadas.items():
-                promedio_final = sum(valores) / len(valores)
-                unidad = "%" if "Humedad" in tipo else "°C"
-                resumen_alertas.append(f"{tipo} ({promedio_final:.1f}{unidad})")
-            
-            sector.estado = f"CRÍTICO - {', '.join(resumen_alertas)}"
-        else:
-            sector.estado = "OK"
+        
+        sector.estado = generar_resumen_estado(alertas_agrupadas)
                 
     return sectores
 
 @app.patch("/sectores/{sector_id}", response_model=SectorResponse)
-def actualizar_parcial_sector(sector_id: int, datos: SectorUpdate, db: Session = Depends(get_db)):
+def actualizar_parcial_sector(sector_id: int, datos: SectorUpdate, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
     sector_db = db.query(SectorDB).filter(SectorDB.id == sector_id).first()
     if not sector_db:
         raise HTTPException(status_code=404, detail="Sector no encontrado")
@@ -123,7 +130,7 @@ def actualizar_parcial_sector(sector_id: int, datos: SectorUpdate, db: Session =
     return sector_db
 
 @app.delete("/sectores/{sector_id}", status_code=status.HTTP_204_NO_CONTENT)
-def eliminar_sector(sector_id: int, db: Session = Depends(get_db)):
+def eliminar_sector(sector_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
     sector = db.query(SectorDB).filter(SectorDB.id == sector_id).first()
     if not sector:
         raise HTTPException(status_code=404, detail="Sector no encontrado")
@@ -180,7 +187,7 @@ def monitorear_sector(sector_id: int, db: Session = Depends(get_db)):
     }
     
 @app.put("/sectores/{sector_id}", response_model=SectorResponse)
-def reemplazar_sector_completo(sector_id: int, datos: SectorCreate, db: Session = Depends(get_db)):
+def reemplazar_sector_completo(sector_id: int, datos: SectorCreate, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
     if datos.id != sector_id:
         raise HTTPException(status_code=400, detail="El ID del cuerpo no coincide con el de la URL")
     # 1. Buscamos el registro existente
@@ -207,8 +214,7 @@ def reemplazar_sector_completo(sector_id: int, datos: SectorCreate, db: Session 
 
 @app.post("/sensores/", response_model=SensorResponse)
 def crear_sensor(
-    sensor: SensorCreate, # <--- FastAPI usa esta clase para armar el Swagger
-    db: Session = Depends(get_db),
+    sensor: SensorCreate,db: Session = Depends(get_db), 
     current_user: UserDB = Depends(get_current_user)
 ):
     # El **sensor.model_dump() expande nombre, tipo y sector_id
@@ -219,7 +225,7 @@ def crear_sensor(
     return nuevo_sensor
 
 @app.get("/sensores/", response_model=List[SensorResponse])
-def listar_sensores(db: Session = Depends(get_db)):
+def listar_sensores(db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
     return db.query(SensorDB).all()
 
 @app.get("/sensores/{sensor_id}", response_model=SensorResponse)
@@ -230,7 +236,7 @@ def obtener_sensor(sensor_id: int, db: Session = Depends(get_db)):
     return sensor
 
 @app.patch("/sensores/{sensor_id}", response_model=SensorResponse)
-def actualizar_parcial_sensor(sensor_id: int, datos: SensorUpdate, db: Session = Depends(get_db)):
+def actualizar_parcial_sensor(sensor_id: int, datos: SensorUpdate, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
     sensor_db = db.query(SensorDB).filter(SensorDB.id == sensor_id).first()
     if not sensor_db:
         raise HTTPException(status_code=404, detail="Sensor no encontrado")

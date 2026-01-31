@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
+from enum import Enum
 # ==========================================
 class LecturaBase(BaseModel):
     valor: float
@@ -20,14 +21,25 @@ class LecturaResponse(BaseModel):
 # ==========================================
 # MODELOS PARA SENSORES
 # ==========================================
-
+class TipoSensorEnum(str, Enum):
+    HUMEDAD = "Humedad"
+    TEMPERATURA = "Temperatura"
+    
 class SensorBase(BaseModel):
     """Lo que define a cualquier sensor en AgroTech"""
     marca: str
     modelo: str
     sector_id: int
     nombre: str   
-    tipo: str
+    tipo: TipoSensorEnum
+    
+class SensorSummary(SensorBase):
+    """Versión liviana para listados"""
+    id: int
+    
+    model_config = ConfigDict(from_attributes=True)
+
+ 
 
 class SensorCreate(SensorBase):
     """Se usa en el POST"""
@@ -88,8 +100,11 @@ class SectorDetalle(BaseModel):
     alertas: List[str]
     cantidad_sensores: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+        
+class SectorListResponse(SectorResponse):
+    """Versión modificada para usar el sensor liviano"""
+    sensores: List[SensorSummary] = []   
     
 # ==========================================
 # MODELOS PARA USUARIOS
