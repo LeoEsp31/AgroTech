@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # Servicio 1: Tu Aplicación FastAPI
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://agrotech_user:agro_pass@db:5432/agrotech_db
+      - SECRET_KEY=TuClaveSecretaSuperDificil
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+    depends_on:
+      - db
+
+  # Servicio 2: Base de Datos PostgreSQL
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=agrotech_user
+      - POSTGRES_PASSWORD=agro_pass
+      - POSTGRES_DB=agrotech_db
+
+volumes:
+  postgres_data:

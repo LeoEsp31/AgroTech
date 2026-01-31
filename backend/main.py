@@ -171,19 +171,56 @@ def obtener_alertas_riego(
 
 @app.get("/monitoreo/{sector_id}")
 def monitorear_sector(sector_id: int, db: Session = Depends(get_db)):
+    # 1. Buscar el sector
     sector = db.query(SectorDB).filter(SectorDB.id == sector_id).first()
-    if not sector or not sector.sensores:
-        raise HTTPException(status_code=404, detail="Sector sin sensores o inexistente")
+    if not sector:
+        raise HTTPException(status_code=404, detail="Sector no encontrado")
     
-    lecturas = [random.randint(20, 80) for _ in sector.sensores]
-    promedio = calcular_promedio(lecturas)
-    analisis = evaluar_estado_sector(promedio, sector.humedad_minima)
+    # 2. Traer lecturas reales (Bulk query optimizada)
+    ids_sensores = [s.id for s in sector.sensores]
+    
+    limite_tiempo = datetime.now(timezone.utc) - timedelta(hours=24)
+    lecturas_bulk = db.query(LecturaDB).filter(
+        LecturaDB.sensor_id.in_(ids_sensores),
+        LecturaDB.fecha >= limite_tiempo
+    ).all()
+    
+    # 3. Agrupar lecturas en memoria
+    lecturas_por_sensor = defaultdict(list)
+    for lectura in lecturas_bulk:
+        lecturas_por_sensor[lectura.sensor_id].append(lectura.valor)
+
+    # 4. Aplicar la lógica de negocio (logic.py)
+    alertas_agrupadas = {}
+    
+    for sensor in sector.sensores:
+        valores = lecturas_por_sensor[sensor.id]
+        if not valores: 
+            continue
+            
+        promedio = sum(valores) / len(valores)
+        
+        # Usamos tu función nueva
+        tipo_alerta = evaluar_sensor(
+            sensor.tipo, 
+            promedio, 
+            sector.humedad_minima, 
+            sector.temp_maxima
+        )
+        
+        if tipo_alerta:
+            if tipo_alerta not in alertas_agrupadas:
+                alertas_agrupadas[tipo_alerta] = []
+            alertas_agrupadas[tipo_alerta].append(promedio)
+
+    # 5. Generar el texto final
+    estado_final = generar_resumen_estado(alertas_agrupadas)
     
     return {
         "sector": sector.nombre,
-        "humedad_promedio": f"{promedio:.2f}%",
-        "analisis": analisis,
-        "sensores_activos": len(sector.sensores)
+        "estado": estado_final,     # Antes era "analisis"
+        "sensores_activos": len(sector.sensores),
+        "total_lecturas_24h": len(lecturas_bulk)
     }
     
 @app.put("/sectores/{sector_id}", response_model=SectorResponse)
