@@ -1,15 +1,13 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
-
-
-
+# ==========================================
 class LecturaBase(BaseModel):
     valor: float
     sensor_id: int
 
 class LecturaCreate(LecturaBase):
-    pass # No necesitamos nada más para crearla
+    pass 
 
 class LecturaResponse(BaseModel):
     id: int
@@ -18,7 +16,6 @@ class LecturaResponse(BaseModel):
     sensor_id: int
 
     model_config = ConfigDict(from_attributes=True)
-
 
 # ==========================================
 # MODELOS PARA SENSORES
@@ -33,8 +30,8 @@ class SensorBase(BaseModel):
     tipo: str
 
 class SensorCreate(SensorBase):
-    """Se usa en el POST: El ID es obligatorio al crear manualmente"""
-    id: int
+    """Se usa en el POST"""
+    pass
 
 class SensorUpdate(BaseModel):
     """Se usa en PATCH/PUT: Todo es opcional para el bucle setattr"""
@@ -51,7 +48,6 @@ class SensorResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-
 # ==========================================
 # MODELOS PARA SECTORES
 # ==========================================
@@ -65,7 +61,7 @@ class SectorBase(BaseModel):
     temp_maxima: float = 40.0
 class SectorCreate(SectorBase):
     """Se usa en el POST"""
-    id: int
+    pass
 
 class SectorUpdate(BaseModel):
     """Se usa en PATCH/PUT: Permite actualizaciones parciales inteligentes"""
@@ -74,6 +70,7 @@ class SectorUpdate(BaseModel):
     humedad_minima: Optional[int] = Field(None, ge=0, le=100)
 
 class SectorResponse(BaseModel):
+    """Respuesta detallada de un sector con sus sensores"""
     id: int
     nombre: str
     descripcion: Optional[str]
@@ -97,17 +94,13 @@ class SectorDetalle(BaseModel):
 # ==========================================
 # MODELOS PARA USUARIOS
 # ==========================================
-    
-# 1. La Base: Lo que comparten todas las versiones del usuario
+
 class UserBase(BaseModel):
     username: str
 
-# Se usa solo cuando alguien se registra (POST /usuarios/)
 class UserCreate(UserBase):
     password: str
 
-# 3. Para Respuesta: Hereda el username y AGREGA id y estado
-# NO tiene password. Es lo que la API devuelve al mundo.
 class UserResponse(UserBase):
     id: int
     is_active: bool
