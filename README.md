@@ -6,7 +6,7 @@
 ![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED)
 ![Tests](https://img.shields.io/badge/Tests-Pytest-yellow)
 
-Sistema Backend para el monitoreo IoT de cultivos (específicamente viñedos) en la provincia de San Juan, Argentina. Esta API REST permite gestionar sectores, sensores y lecturas en tiempo real, evaluando automáticamente condiciones críticas para optimizar el riego y prevenir heladas.
+Sistema Backend para el monitoreo IoT de cultivos (cultivos intensivos como vid u olivos) en la provincia de San Juan, Argentina. Esta API REST permite gestionar sectores, sensores y lecturas en tiempo real, evaluando automáticamente condiciones críticas para optimizar el riego y prevenir heladas.
 
 ## 🚀 Características Principales
 
