@@ -8,17 +8,19 @@ def evaluar_sensor(tipo: str, valor: float, humedad_min: float, temp_max: float)
     tipo_normalizado = tipo.lower()
     
     if tipo_normalizado == "humedad" and valor < humedad_min:
-        return "Baja Humedad"
+        return "Baja Humedad (Sequía)"
     
-    if tipo_normalizado == "temperatura" and valor > temp_max:
-        return "Alta Temperatura"
+    if tipo_normalizado == "temperatura":
+        if valor > temp_max:
+            return "Alta Temperatura"
+        if valor < 2.0: 
+            return "Peligro de Helada"
         
     return None
 
 def generar_resumen_estado(alertas: Dict[str, List[float]]) -> str:
     """
-    Toma un diccionario de alertas y construye el string final para el usuario.
-    Ej: {"Baja Humedad": [15.0]} -> "CRÍTICO - Baja Humedad (15.0%)"
+    Toma un diccionario de alertas y construye el string final.
     """
     if not alertas:
         return "OK"
